@@ -2,6 +2,8 @@ import { supabase, isConfigured } from './supabase'
 import { auth as localAuth, viewHistory } from './auth'
 import { avatarService } from './avatar'
 
+export { isConfigured }
+
 export const supabaseAuth = {
   isConfigured,
 

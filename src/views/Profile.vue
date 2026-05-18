@@ -3,7 +3,9 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { auth, viewHistory } from '../services/auth'
 import { useAuthStore } from '../store/auth'
-import { favoritesService } from '../services/favorites'
+import { supabaseFavorites } from '../services/supabaseFavorites'
+import { supabaseAuth, isConfigured } from '../services/supabaseAuth'
+import { supabase } from '../services/supabase'
 import { avatarService } from '../services/avatar'
 import { User, Settings, Trash2, Clock, Heart, X, Film, Star, LogOut, Camera, Upload } from 'lucide-vue-next'
 
@@ -27,24 +29,40 @@ const settingsError = ref('')
 const settingsSuccess = ref('')
 const showAvatarUpload = ref(false)
 
-onMounted(() => {
+const favoritesService = isConfigured ? supabaseFavorites : {
+  getAll: () => JSON.parse(localStorage.getItem('film_haven_favorites') || '[]'),
+  remove: (id) => {
+    const f = JSON.parse(localStorage.getItem('film_haven_favorites') || '[]')
+    localStorage.setItem('film_haven_favorites', JSON.stringify(f.filter(m => m.id !== id)))
+  },
+  clear: () => localStorage.removeItem('film_haven_favorites')
+}
+
+onMounted(async () => {
   if (!user.value) {
     router.push('/auth')
     return
   }
   username.value = user.value.username
   email.value = user.value.email
+  
   if (userId.value) {
     history.value = viewHistory.getAll(userId.value)
   }
-  favorites.value = favoritesService.getAll()
-  const savedAvatar = avatarService.get()
-  if (savedAvatar) {
-    avatarUrl.value = savedAvatar
+  
+  favorites.value = await favoritesService.getAll()
+  
+  if (user.value?.avatar) {
+    avatarUrl.value = user.value.avatar
+  } else {
+    const savedAvatar = avatarService.get()
+    if (savedAvatar) {
+      avatarUrl.value = savedAvatar
+    }
   }
 })
 
-const handleAvatarUpload = (event) => {
+const handleAvatarUpload = async (event) => {
   const file = event.target.files?.[0]
   if (!file) return
 
@@ -58,18 +76,35 @@ const handleAvatarUpload = (event) => {
     return
   }
 
-  const reader = new FileReader()
-  reader.onload = (e) => {
-    const result = e.target?.result
-    if (typeof result === 'string') {
-      avatarService.set(result)
-      avatarUrl.value = result
+  settingsLoading.value = true
+  
+  if (isConfigured && user.value) {
+    const result = await supabaseAuth.uploadAvatar(file)
+    if (result.error) {
+      settingsError.value = result.error
+    } else {
+      avatarUrl.value = result.url
       settingsSuccess.value = 'Аватар обновлён'
       setTimeout(() => { settingsSuccess.value = '' }, 2000)
     }
+  } else {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const result = e.target?.result
+      if (typeof result === 'string') {
+        avatarService.set(result)
+        avatarUrl.value = result
+        settingsSuccess.value = 'Аватар обновлён'
+        setTimeout(() => { settingsSuccess.value = '' }, 2000)
+      }
+    }
+    reader.readAsDataURL(file)
   }
-  reader.readAsDataURL(file)
+  
+  settingsLoading.value = false
 }
+
+const settingsLoading = ref(false)
 
 const removeAvatar = () => {
   avatarService.clear()
@@ -100,14 +135,14 @@ const clearHistory = () => {
   }
 }
 
-const removeFromFavorites = (movieId) => {
-  favoritesService.remove(movieId)
-  favorites.value = favoritesService.getAll()
+const removeFromFavorites = async (movieId) => {
+  await favoritesService.remove(movieId)
+  favorites.value = await favoritesService.getAll()
 }
 
-const clearFavorites = () => {
+const clearFavorites = async () => {
   if (confirm('Очистить всё избранное?')) {
-    favoritesService.clear()
+    await favoritesService.clear()
     favorites.value = []
   }
 }
@@ -127,7 +162,7 @@ const getTypeColor = (type) => {
   return colors[type] || '#e6a855'
 }
 
-const updateProfile = () => {
+const updateProfile = async () => {
   settingsError.value = ''
   settingsSuccess.value = ''
   
@@ -136,20 +171,32 @@ const updateProfile = () => {
     return
   }
   
-  const result = auth.updateProfile({
-    username: username.value,
-    email: email.value
-  })
-  
-  if (result.success) {
-    settingsSuccess.value = 'Профиль обновлён'
-    setTimeout(() => { showSettings.value = false }, 1500)
+  if (isConfigured && user.value) {
+    const result = await supabaseAuth.updateProfile({
+      username: username.value,
+      email: email.value
+    })
+    if (result.error) {
+      settingsError.value = result.error
+    } else {
+      settingsSuccess.value = 'Профиль обновлён'
+      setTimeout(() => { showSettings.value = false }, 1500)
+    }
   } else {
-    settingsError.value = result.error
+    const result = auth.updateProfile({
+      username: username.value,
+      email: email.value
+    })
+    if (result.success) {
+      settingsSuccess.value = 'Профиль обновлён'
+      setTimeout(() => { showSettings.value = false }, 1500)
+    } else {
+      settingsError.value = result.error
+    }
   }
 }
 
-const changePassword = () => {
+const changePassword = async () => {
   settingsError.value = ''
   settingsSuccess.value = ''
   
@@ -168,15 +215,30 @@ const changePassword = () => {
     return
   }
   
-  const result = auth.changePassword(currentPassword.value, newPassword.value)
-  
-  if (result.success) {
-    settingsSuccess.value = 'Пароль изменён'
-    currentPassword.value = ''
-    newPassword.value = ''
-    confirmPassword.value = ''
+  if (isConfigured) {
+    const { error } = await supabase.auth.updateUser({
+      password: newPassword.value
+    })
+    
+    if (error) {
+      settingsError.value = error.message
+    } else {
+      settingsSuccess.value = 'Пароль изменён'
+      currentPassword.value = ''
+      newPassword.value = ''
+      confirmPassword.value = ''
+    }
   } else {
-    settingsError.value = result.error
+    const result = auth.changePassword(currentPassword.value, newPassword.value)
+    
+    if (result.success) {
+      settingsSuccess.value = 'Пароль изменён'
+      currentPassword.value = ''
+      newPassword.value = ''
+      confirmPassword.value = ''
+    } else {
+      settingsError.value = result.error
+    }
   }
 }
 
